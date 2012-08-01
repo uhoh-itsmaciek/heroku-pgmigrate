@@ -15,12 +15,14 @@ class Heroku::Command::Pg < Heroku::Command::Base
     rebind = Heroku::PgMigrate::RebindConfig.new(api, app)
     provision = Heroku::PgMigrate::Provision.new(api, app)
     foi_pgbackups = Heroku::PgMigrate::FindOrInstallPgBackups.new(api, app)
+    shenInfo = Heroku::PgMigrate::ShenInfo.new(api, app)
     transfer = Heroku::PgMigrate::Transfer.new(api, app)
     check_shared = Heroku::PgMigrate::CheckShared.new(api, app)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
     mp.enqueue(check_shared)
     mp.enqueue(foi_pgbackups)
+    mp.enqueue(shenInfo)
     mp.enqueue(provision)
     mp.enqueue(maintenance)
     mp.enqueue(scale_zero)
@@ -128,6 +130,58 @@ class Heroku::PgMigrate::MultiPhase
       end
     end
   end
+end
+
+class Heroku::PgMigrate::ShenInfo
+  include Heroku::Helpers
+
+  def initialize(api, app)
+    @api = api
+    @app = app
+  end
+
+  def perform!(ff)
+    action("Counting rows used in shared-database on #{@app}") {
+
+      auth_client = Heroku::Auth.client
+      ldb_client = Heroku::Client.new(auth_client.user, auth_client.password,
+                                      'https://legacydbs.herokuapp.com')
+
+      raw_resource = ldb_client.resource("/apps")
+
+      last_cookies_we_sent = nil
+
+      response = raw_resource.get do |response, request, result, &block|
+        last_cookies_we_sent = request.cookies
+        response.return!(request, result, &block)
+      end
+
+      result = ldb_client.get("/apps/#{@app}", :accept => :json,
+                              :cookies => last_cookies_we_sent)
+
+      decoded = json_decode result.body
+
+      row_count = decoded['row_count']
+      recommended_plan = decoded['new_plan']
+      has_db = decoded['has_db']
+
+      if has_db
+        display "\nYour current database has #{row_count} row(s)."
+        if row_count > 0
+          display "We recommend you migrate to the #{recommended_plan} plan."
+        else
+          display "We recommend you decommission the database if you do not need one."
+        end
+      end
+      
+    }
+    return Heroku::PgMigrate::XactEmit.new([], [], nil)
+  end
+
+  def rollback!
+    # do nothing
+  end
+
 end
 
 class Heroku::PgMigrate::Maintenance
@@ -564,3 +618,4 @@ class Heroku::PgMigrate::CheckShared
   end
 
 end
+
