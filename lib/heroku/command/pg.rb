@@ -73,13 +73,9 @@ class Heroku::PgMigrate::MultiPhase
         end
 
         display('Migration completed successfully.')
-
-        display(
-          "Please check your application #{rd.app}.  " +
-          "If everything appears to be working, " +
-          "remove your shared database with addons:remove.  " +
-          "If things are not working, use 'heroku rollback " +
-          "#{rd.name}'.")
+      else
+        display('Migration failed.')
+        exit!(97)
       end
     }
 
