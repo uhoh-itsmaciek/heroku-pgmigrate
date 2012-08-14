@@ -6,22 +6,24 @@ class Heroku::Command::Pg < Heroku::Command::Base
 
   include Heroku::Helpers
 
-  # pg:migrate
+  # pg:migrate EXPECTED_CURRENT_RELEASE_NAME SHEN_URL
   #
   # Migrate from legacy shared databases to Heroku Postgres Dev
   def migrate
+    rel_name = shift_argument
+    shen_url = shift_argument
+    validate_arguments!
+
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
     scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
-    rebind = Heroku::PgMigrate::RebindConfig.new(api, app)
+    rebind = Heroku::PgMigrate::RebindConfig.new(api, app, shen_url)
     provision = Heroku::PgMigrate::Provision.new(api, app)
     foi_pgbackups = Heroku::PgMigrate::FindOrInstallPgBackups.new(api, app)
-    transfer = Heroku::PgMigrate::Transfer.new(api, app)
-    check_shared = Heroku::PgMigrate::CheckShared.new(api, app)
-    release_num = Heroku::PgMigrate::ReleaseNumber.new(api, app)
+    transfer = Heroku::PgMigrate::Transfer.new(api, app, shen_url)
+    release_num = Heroku::PgMigrate::ReleaseNumber.new(api, app, rel_name)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
     mp.enqueue(release_num)
-    mp.enqueue(check_shared)
     mp.enqueue(foi_pgbackups)
     mp.enqueue(provision)
     mp.enqueue(maintenance)
@@ -277,10 +279,10 @@ end
 class Heroku::PgMigrate::RebindConfig
   include Heroku::Helpers
 
-  def initialize(api, app)
+  def initialize(api, app, shen_url)
     @api = api
     @app = app
-    @old = nil
+    @old = shen_url
     @rebinding = nil
   end
 
@@ -289,11 +291,6 @@ class Heroku::PgMigrate::RebindConfig
     pdata = ff.fetch(Heroku::PgMigrate::Provision)
     config = pdata.config_var_snapshot
     new_url = config.fetch(pdata.env_var_name)
-
-    # Find and confirm the SHARED_DATABASE_URL's existence.  It should
-    # have already been verified by the step that grabbed the config
-    # snapshot.
-    @old = config.fetch('SHARED_DATABASE_URL')
 
     # Compute all the configuration variables that need rebinding.
     rebinding = self.class.find_rebindings(config, @old)
@@ -389,14 +386,6 @@ class Heroku::PgMigrate::Provision
 
       config_var_name = addon_name + '_URL'
       config_vars = @api.get_config_vars(@app).body
-
-      # Just in case there is a race where SHARED_DATABASE_URL is
-      # removed between the initial check and this snapshot that is
-      # propagated to other parts of this program.  If there is no
-      # SHARED_DATABASE_URL then a CannotMigrate exception will be
-      # raised.
-      recheck = Heroku::PgMigrate::CheckShared.new(@api, @app)
-      recheck.perform!({})
     }
 
     return Heroku::PgMigrate::XactEmit.new([], [],
@@ -449,16 +438,17 @@ end
 class Heroku::PgMigrate::Transfer
   include Heroku::Helpers
 
-  def initialize(api, app)
+  def initialize(api, app, shen_url)
     @api = api
     @app = app
+    @shen_url = shen_url
   end
 
   def perform!(ff)
     pdata = ff.fetch(Heroku::PgMigrate::Provision)
     config = pdata.config_var_snapshot
     pgbackups_url = config.fetch('PGBACKUPS_URL')
-    from_url = config.fetch('SHARED_DATABASE_URL')
+    from_url = @shen_url
     to_url = config.fetch(pdata.env_var_name)
 
     pgbackups_client = Heroku::Client::Pgbackups.new(pgbackups_url)
@@ -558,52 +548,28 @@ class Heroku::PgMigrate::Transfer
   end
 end
 
-class Heroku::PgMigrate::CheckShared
-  include Heroku::Helpers
-
-  def initialize(api, app)
-    @api = api
-    @app = app
-  end
-
-  def perform!(ff)
-    addons = @api.get_addons(@app).body
-    config_vars = @api.get_config_vars(@app).body
-
-    attach_vals = addons.select { |addon|
-      addon['name'].start_with?('heroku-postgresql:')
-    }.map { |addon|
-      addon['attachment_name']
-    }.map { |attach_name|
-      config_vars[attach_name + '_URL']
-    }
-
-    sdb = config_vars['SHARED_DATABASE_URL']
-    if sdb.nil?
-      raise Heroku::PgMigrate::CannotMigrate.new(
-        'SHARED_DATABASE_URL unbound, aborting migration.')
-    elsif attach_vals.include?(sdb)
-      raise Heroku::PgMigrate::CannotMigrate.new(
-        'SHARED_DATABASE_URL is already bound to a heroku-postgresql plan.')
-    end
-
-    return nil
-  end
-
-end
-
 class Heroku::PgMigrate::ReleaseNumber
 
   ReleaseData = Struct.new(:app, :name)
 
-  def initialize(api, app)
+  def initialize(api, app, expected_rel_name)
     @api = api
     @app = app
+    @expect = expected_rel_name
   end
 
   def perform!(ff)
-    return Heroku::PgMigrate::XactEmit.new([], [],
-      ReleaseData.new(@app,
-        @api.get_release(@app, 'current').body.fetch('name')))
+    rel_info = ReleaseData.new(@app,
+      @api.get_release(@app, 'current').body.fetch('name'))
+
+    if rel_info.name != @expect
+      raise Heroku::PgMigrate::CannotMigrate.new(
+        "ERROR: Release number doesn't match expected.  " +
+        "Found: #{rel_info.name.inspect} Expect:#{@expect.inspect}.\n" +
+        "This can be normal if the app has had anything done to it and our " +
+        "migration assumptions are thus stale.")
+    end
+
+    return Heroku::PgMigrate::XactEmit.new([], [], rel_info)
   end
 end
