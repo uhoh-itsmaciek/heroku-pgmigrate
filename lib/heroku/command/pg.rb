@@ -63,8 +63,9 @@ class Heroku::PgMigrate::MultiPhase
 
   def engage
     feed_forward = {}
+    caught_exception = nil
     at_exit {
-      self.class.process_rollbacks(@rollbacks)
+      self.class.process_rollbacks(@rollbacks, caught_exception)
 
       if @success
         rd = feed_forward[Heroku::PgMigrate::ReleaseNumber]
@@ -89,7 +90,13 @@ class Heroku::PgMigrate::MultiPhase
       emit = nil
 
       begin
-        emit = xact.perform!(feed_forward)
+        begin
+          emit = xact.perform!(feed_forward)
+        rescue Exception => error
+          # Always save the exception raised for rollback behavior
+          caught_exception = error
+          raise
+        end
       rescue Heroku::PgMigrate::NeedRollback => error
         @rollbacks.push(xact)
         raise
@@ -126,7 +133,7 @@ class Heroku::PgMigrate::MultiPhase
     return feed_forward
   end
 
-  def self.process_rollbacks(rollbacks)
+  def self.process_rollbacks(rollbacks, caught_exception)
     # Disabling SIGINT handling during rollback to prevent
     # double-cancels from re-raising exceptions the trap set in
     # "engage".
@@ -146,7 +153,7 @@ class Heroku::PgMigrate::MultiPhase
         # allows them to avoid writing noop rollback! methods all the
         # time.
         if xact.respond_to?(:rollback!)
-          xact.rollback!
+          xact.rollback!(caught_exception)
         end
       rescue
         puts $!.to_s
@@ -177,7 +184,7 @@ class Heroku::PgMigrate::Maintenance
     raise
   end
 
-  def rollback!
+  def rollback!(reason)
     action("Leaving maintenance mode for application #{@app}") {
       @api.post_app_maintenance(@app, '0')
     }
@@ -218,7 +225,7 @@ class Heroku::PgMigrate::ScaleZero
     raise
   end
 
-  def rollback!
+  def rollback!(reason)
     if @old_counts == nil
       # Must be true iff processes were never scaled down.
     else
@@ -310,7 +317,7 @@ class Heroku::PgMigrate::RebindConfig
     return nil
   end
 
-  def rollback!
+  def rollback!(reason)
     if @rebinding.nil? || @old.nil?
       # Apparently, perform! never got far enough to bind enough
       # rollback state.
@@ -365,6 +372,7 @@ class Heroku::PgMigrate::Provision
   def initialize(api, app)
     @api = api
     @app = app
+    @addon_name = nil
   end
 
   def perform!(ff)
@@ -377,15 +385,25 @@ class Heroku::PgMigrate::Provision
       # Parse out the bound variable name
       add_msg = addon.body["message"]
       add_msg =~ /^Attached as (HEROKU_POSTGRESQL_[A-Z]+)$/
-      addon_name = $1
-      status("attached as #{addon_name}")
+      @addon_name = $1
+      status("attached as #{@addon_name}")
 
-      config_var_name = addon_name + '_URL'
+      config_var_name = @addon_name + '_URL'
       config_vars = @api.get_config_vars(@app).body
     }
 
-    return Heroku::PgMigrate::XactEmit.new([], [],
+    return Heroku::PgMigrate::XactEmit.new([], [self],
       ForwardData.new(config_var_name, config_vars))
+  rescue Exception => error
+    error.extend(Heroku::PgMigrate::NeedRollback)
+    raise
+  end
+
+  def rollback!(reason)
+    if reason != nil
+      display("Deleting addon after failed migration: #{@addon_name}")
+      @api.delete_addon(@app, @addon_name)
+    end
   end
 end
 
