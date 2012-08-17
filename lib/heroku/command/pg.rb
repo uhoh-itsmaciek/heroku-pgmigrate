@@ -33,6 +33,16 @@ class Heroku::Command::Pg < Heroku::Command::Base
 
     mp.engage()
   end
+
+  def releasereport
+    crel = api.get_release(app, 'current')
+    ['name', 'pstable', 'addons', 'env'].each { |n|
+      display(n + ":\t" + crel.body.fetch(n).inspect)
+    }
+
+    display('process-counts' + ":\t" +
+      Heroku::PgMigrate::ScaleZero.process_count(api, app).inspect)
+  end
 end
 
 module Heroku::PgMigrate
