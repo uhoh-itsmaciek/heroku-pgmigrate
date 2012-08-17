@@ -58,6 +58,9 @@ end
 class Heroku::PgMigrate::CannotMigrate < RuntimeError
 end
 
+class Heroku::PgMigrate::ReleaseClash < RuntimeError
+end
+
 class Heroku::PgMigrate::MultiPhase
   include Heroku::Helpers
 
@@ -65,6 +68,7 @@ class Heroku::PgMigrate::MultiPhase
     @to_perform = Queue.new
     @rollbacks = []
     @success = false
+    @relclash = false
   end
 
   def enqueue(xact)
@@ -85,8 +89,13 @@ class Heroku::PgMigrate::MultiPhase
 
         display('Migration completed successfully.')
       else
-        display('Migration failed.')
-        exit!(97)
+        if @relclash
+          display('Migration failed trivially: release clash')
+          exit!(72)
+        else
+          display('Migration failed.')
+          exit!(97)
+        end
       end
     }
 
@@ -107,6 +116,9 @@ class Heroku::PgMigrate::MultiPhase
           caught_exception = error
           raise
         end
+      rescue Heroku::PgMigrate::ReleaseClash => error
+        @relclash = true
+        raise
       rescue Heroku::PgMigrate::NeedRollback => error
         @rollbacks.push(xact)
         raise
@@ -587,7 +599,7 @@ class Heroku::PgMigrate::ReleaseNumber
       @api.get_release(@app, 'current').body.fetch('name'))
 
     if rel_info.name != @expect
-      raise Heroku::PgMigrate::CannotMigrate.new(
+      raise Heroku::PgMigrate::ReleaseClash.new(
         "ERROR: Release number doesn't match expected.  " +
         "Found: #{rel_info.name.inspect} Expect:#{@expect.inspect}.\n" +
         "This can be normal if the app has had anything done to it and our " +
