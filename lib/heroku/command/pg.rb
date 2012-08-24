@@ -34,6 +34,15 @@ class Heroku::Command::Pg < Heroku::Command::Base
     mp.engage()
   end
 
+  def prepostinvariant
+    # This program displays strings that should be the same before and
+    # after migration.
+    display('Maintenance mode: ' +
+      Heroku::PgMigrate::Maintenance.fetch_maintenance_status(api, app).to_s)
+    display('process-counts' + ":\t" +
+      Heroku::PgMigrate::ScaleZero.process_count(api, app).sort.inspect)
+  end
+
   def releasereport
     crel = api.get_release(app, 'current')
     ['name', 'pstable', 'addons', 'env'].each { |n|
