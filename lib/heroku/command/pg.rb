@@ -190,26 +190,60 @@ class Heroku::PgMigrate::Maintenance
   def initialize(api, app)
     @api = api
     @app = app
+    @precondition_mm = nil
   end
 
   def perform!(ff)
-    action("Entering maintenance mode on application #{@app}") {
-      @api.post_app_maintenance(@app, '1')
+    # Avoid setting/un-setting maintenance mode if it was on to begin
+    # with.
+    action("Checking if maintenance mode already set") {
+      @precondition_mm = self.class.fetch_maintenance_status(@api, @app)
+      status("is #{@precondition_mm}")
     }
 
-    # Always want to rollback, regardless of exceptions or their
-    # absence.  However, exceptions must be propagated as to
-    # interrupt continued execution.
-    return Heroku::PgMigrate::XactEmit.new([], [self], nil)
-  rescue Exception => error
-    error.extend(Heroku::PgMigrate::NeedRollback)
-    raise
+    begin
+      if !@precondition_mm
+        action("Entering maintenance mode on application #{@app}") {
+          @api.post_app_maintenance(@app, '1')
+        }
+      else
+        display("Maintenance mode was already set on #{@app}, doing nothing")
+      end
+
+      # Always want to rollback, regardless of exceptions or their
+      # absence.  However, exceptions must be propagated as to
+      # interrupt continued execution.
+      return Heroku::PgMigrate::XactEmit.new([], [self], nil)
+    rescue Exception => error
+      error.extend(Heroku::PgMigrate::NeedRollback)
+      raise
+    end
   end
 
   def rollback!(reason)
-    action("Leaving maintenance mode for application #{@app}") {
-      @api.post_app_maintenance(@app, '0')
-    }
+    if @precondition_mm
+      display("No need to leave maintenance mode, because:\n" +
+        "\tprecondition: #{@precondition_mm}\n")
+    else
+      action("Leaving maintenance mode for application #{@app}") {
+        @api.post_app_maintenance(@app, '0')
+      }
+    end
+  end
+
+  #
+  # Helper Procedures
+  #
+  def self.fetch_maintenance_status(api, app)
+    mm = api.get_app_maintenance(app).body.fetch('maintenance')
+
+    if mm != false && mm != true
+      raise Heroku::PgMigrate::CannotMigrate.new(
+        'ERROR: Maintenance mode violates two-valued logic: is ' +
+        mm.inspect)
+    end
+
+    return mm
   end
 end
 
