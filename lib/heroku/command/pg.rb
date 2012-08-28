@@ -87,6 +87,9 @@ EOF
   end
 
   def releasereport
+    display('Maintenance mode: ' +
+      Heroku::PgMigrate::Maintenance.fetch_maintenance_status(api, app).to_s)
+
     crel = api.get_release(app, 'current')
     ['name', 'pstable', 'addons', 'env'].each { |n|
       display(n + ":\t" + crel.body.fetch(n).inspect)
