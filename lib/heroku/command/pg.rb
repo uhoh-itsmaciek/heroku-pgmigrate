@@ -49,7 +49,10 @@ class Heroku::Command::Pg < Heroku::Command::Base
 
       # Paranoia to be robust against code change
       exit(83)
-    rescue Exception => e
+    rescue SystemExit
+      # Do Nothing
+      raise
+    rescue Exception, Interrupt => e
       display('Process rollbacks')
       display(mp.caught_exception.inspect)
       mp.class.process_rollbacks(mp.rollbacks, mp.caught_exception)
