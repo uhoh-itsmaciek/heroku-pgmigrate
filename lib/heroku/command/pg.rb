@@ -31,7 +31,50 @@ class Heroku::Command::Pg < Heroku::Command::Base
     mp.enqueue(transfer)
     mp.enqueue(rebind)
 
-    mp.engage()
+    begin
+      mp.engage()
+
+      if mp.success
+        # Rollbacks are more like "finally" when there is no exception
+        # thrown.
+        mp.class.process_rollbacks(mp.rollbacks, nil)
+        display('Migration completed successfully.')
+        exit(0)
+      else
+        # Really bad news, because a failure without an exception is
+        # not intended to ever occur.  This more akin to an assertion
+        # failure.
+        display("FATAL: not successful, but no exception.  Check carefully.")
+      end
+
+      # Paranoia to be robust against code change
+      exit(83)
+    rescue Exception => e
+      display('Process rollbacks')
+      display(mp.caught_exception.inspect)
+      mp.class.process_rollbacks(mp.rollbacks, mp.caught_exception)
+      display('Rollbacks processed')
+
+      display (<<EOF
+ !
+ !    ROLLBACK BACKTRACE
+ !
+
+EOF
+)
+      display(e.backtrace)
+      display("Rolled back because of exception:\n#{e.inspect}")
+
+      if mp.relclash
+        display("Migration failed trivially: release clash")
+        exit(72)
+      else
+        display("Migration failed")
+        exit(97)
+      end
+
+      raise
+    end
   end
 
   def prepostinvariant
@@ -73,11 +116,14 @@ end
 class Heroku::PgMigrate::MultiPhase
   include Heroku::Helpers
 
+  attr_reader :caught_exception, :rollbacks, :success, :relclash
+
   def initialize()
     @to_perform = Queue.new
     @rollbacks = []
     @success = false
     @relclash = false
+    @caught_exception = nil
   end
 
   def enqueue(xact)
@@ -86,27 +132,6 @@ class Heroku::PgMigrate::MultiPhase
 
   def engage
     feed_forward = {}
-    caught_exception = nil
-    at_exit {
-      self.class.process_rollbacks(@rollbacks, caught_exception)
-
-      if @success
-        rd = feed_forward[Heroku::PgMigrate::ReleaseNumber]
-        if rd.nil?
-          return
-        end
-
-        display('Migration completed successfully.')
-      else
-        if @relclash
-          display('Migration failed trivially: release clash')
-          exit!(72)
-        else
-          display('Migration failed.')
-          exit!(97)
-        end
-      end
-    }
 
     loop do
       break if @to_perform.length == 0
@@ -120,9 +145,9 @@ class Heroku::PgMigrate::MultiPhase
       begin
         begin
           emit = xact.perform!(feed_forward)
-        rescue Exception => error
+        rescue Exception, Interrupt => error
           # Always save the exception raised for rollback behavior
-          caught_exception = error
+          @caught_exception = error
           raise
         end
       rescue Heroku::PgMigrate::ReleaseClash => error
@@ -165,12 +190,6 @@ class Heroku::PgMigrate::MultiPhase
   end
 
   def self.process_rollbacks(rollbacks, caught_exception)
-    # Disabling SIGINT handling during rollback to prevent
-    # double-cancels from re-raising exceptions the trap set in
-    # "engage".
-    trap(:INT) do
-    end
-
     # Rollbacks are intended to be idempotent (as they may get run
     # one or more times unless someone completely kills the program)
     # and we'd *really* prefer them run until they are successful,
@@ -179,15 +198,20 @@ class Heroku::PgMigrate::MultiPhase
       xact = rollbacks.pop()
       break if xact.nil?
 
-      begin
-        # Some actions have no sensible rollback, but this conditional
-        # allows them to avoid writing noop rollback! methods all the
-        # time.
-        if xact.respond_to?(:rollback!)
-          xact.rollback!(caught_exception)
+      # Nested loop to retry in event of re-raised interrupts
+      loop do
+        begin
+          # Some actions have no sensible rollback, but this conditional
+          # allows them to avoid writing noop rollback! methods all the
+          # time.
+          if xact.respond_to?(:rollback!)
+            xact.rollback!(caught_exception)
+          end
+
+          break
+        rescue Exception, Interrupt => e
+          puts e.to_s
         end
-      rescue
-        puts $!.to_s
       end
     end
   end
@@ -466,7 +490,13 @@ class Heroku::PgMigrate::Provision
 
   def rollback!(reason)
     if reason != nil
-      display("Deleting addon after failed migration: #{@addon_name}")
+      if @addon_name.nil?
+        display("Couldn't delete addon after failed migration:\n" +
+          "did not receive its name (it may still have been added)")
+      else
+        display("Deleting addon after failed migration: #{@addon_name}")
+      end
+
       @api.delete_addon(@app, @addon_name)
     end
   end
