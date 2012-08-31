@@ -166,7 +166,7 @@ class Heroku::PgMigrate::MultiPhase
         # Just need to print the message, run the rollbacks --
         # guarded by "ensure" -- and exit cleanly.
         hputs(error.message)
-        return
+        raise
       end
 
       # Many actions do not need to set up any rollbacks and do not
