@@ -6,11 +6,10 @@ class Heroku::Command::Pg < Heroku::Command::Base
 
   include Heroku::Helpers
 
-  # pg:migrate EXPECTED_CURRENT_RELEASE_NAME SHEN_URL
+  # pg:migrate SHEN_URL
   #
   # Migrate from legacy shared databases to Heroku Postgres Dev
   def migrate
-    rel_name = shift_argument
     shen_url = shift_argument
     validate_arguments!
 
@@ -20,10 +19,8 @@ class Heroku::Command::Pg < Heroku::Command::Base
     provision = Heroku::PgMigrate::Provision.new(api, app)
     foi_pgbackups = Heroku::PgMigrate::FindOrInstallPgBackups.new(api, app)
     transfer = Heroku::PgMigrate::Transfer.new(api, app, shen_url)
-    release_num = Heroku::PgMigrate::ReleaseNumber.new(api, app, rel_name)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
-    mp.enqueue(release_num)
     mp.enqueue(foi_pgbackups)
     mp.enqueue(provision)
     mp.enqueue(maintenance)
@@ -67,15 +64,8 @@ EOF
 )
       display(e.backtrace)
       display("Rolled back because of exception:\n#{e.inspect}")
-
-      if mp.relclash
-        display("Migration failed trivially: release clash")
-        exit(72)
-      else
-        display("Migration failed")
-        exit(97)
-      end
-
+      display("Migration failed")
+      exit(97)
       raise
     end
   end
@@ -116,19 +106,15 @@ end
 class Heroku::PgMigrate::CannotMigrate < RuntimeError
 end
 
-class Heroku::PgMigrate::ReleaseClash < RuntimeError
-end
-
 class Heroku::PgMigrate::MultiPhase
   include Heroku::Helpers
 
-  attr_reader :caught_exception, :rollbacks, :success, :relclash
+  attr_reader :caught_exception, :rollbacks, :success
 
   def initialize()
     @to_perform = Queue.new
     @rollbacks = []
     @success = false
-    @relclash = false
     @caught_exception = nil
   end
 
@@ -156,9 +142,6 @@ class Heroku::PgMigrate::MultiPhase
           @caught_exception = error
           raise
         end
-      rescue Heroku::PgMigrate::ReleaseClash => error
-        @relclash = true
-        raise
       rescue Heroku::PgMigrate::NeedRollback => error
         @rollbacks.push(xact)
         raise
@@ -660,31 +643,5 @@ class Heroku::PgMigrate::Transfer
         end
       end
     end
-  end
-end
-
-class Heroku::PgMigrate::ReleaseNumber
-
-  ReleaseData = Struct.new(:app, :name)
-
-  def initialize(api, app, expected_rel_name)
-    @api = api
-    @app = app
-    @expect = expected_rel_name
-  end
-
-  def perform!(ff)
-    rel_info = ReleaseData.new(@app,
-      @api.get_release(@app, 'current').body.fetch('name'))
-
-    if rel_info.name != @expect
-      raise Heroku::PgMigrate::ReleaseClash.new(
-        "ERROR: Release number doesn't match expected.  " +
-        "Found: #{rel_info.name.inspect} Expect:#{@expect.inspect}.\n" +
-        "This can be normal if the app has had anything done to it and our " +
-        "migration assumptions are thus stale.")
-    end
-
-    return Heroku::PgMigrate::XactEmit.new([], [], rel_info)
   end
 end
