@@ -484,9 +484,8 @@ class Heroku::PgMigrate::Provision
           "did not receive its name (it may still have been added)")
       else
         display("Deleting addon after failed migration: #{@addon_name}")
+        @api.delete_addon(@app, @addon_name)
       end
-
-      @api.delete_addon(@app, @addon_name)
     end
   end
 end
