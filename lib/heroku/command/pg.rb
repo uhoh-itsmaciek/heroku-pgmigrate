@@ -9,9 +9,16 @@ class Heroku::Command::Pg < Heroku::Command::Base
   # pg:migrate SHEN_URL
   #
   # Migrate from legacy shared databases to Heroku Postgres Dev
+  #
+  #     --remove-shared-addon plan # Remove the shared database addon when done
   def migrate
     shen_url = shift_argument
     validate_arguments!
+
+    if shen_url == nil
+      display("No Shen URL passed to pg:migrate")
+      exit(23)
+    end
 
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
     scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
@@ -27,6 +34,22 @@ class Heroku::Command::Pg < Heroku::Command::Base
     mp.enqueue(scale_zero)
     mp.enqueue(transfer)
     mp.enqueue(rebind)
+
+    # Conditionally enqueue the removal of the shared database plan
+    if options[:remove_shared_addon]
+      unvalidated = options[:remove_shared_addon]
+      okay_plans = ["shared-database:20gb", "shared-database:5mb"]
+
+      if okay_plans.member? unvalidated
+        # Okay, this is *now* a validated plan name to remove
+        mp.enqueue(Heroku::PgMigrate::RemoveShared.new(api, app, unvalidated))
+      else
+        # This is not a valid plan name
+        display("Was passed this plan to remove: #{unvalidated}, but " +
+          "expected one of #{okay_plans}")
+        exit(23)
+      end
+    end
 
     begin
       mp.engage()
@@ -641,6 +664,32 @@ class Heroku::PgMigrate::Transfer
           redisplay "#{step.capitalize}... #{amount} #{spinner(@ticks)}"
         end
       end
+    end
+  end
+end
+
+class Heroku::PgMigrate::RemoveShared
+  include Heroku::Helpers
+
+  ForwardData = Struct.new(:env_var_name, :config_var_snapshot)
+
+  def initialize(api, app, plan_name)
+    @api = api
+    @app = app
+    @plan_name = plan_name
+  end
+
+  def perform!(ff)
+    display("Will delete original #{@plan_name} at the end of the migration")
+    return Heroku::PgMigrate::XactEmit.new([], [self], nil)
+  end
+
+  def rollback!(reason)
+    if reason.nil?
+      display("Deleted shared database addon: #{@plan_name}")
+      @api.delete_addon(@app, @plan_name)
+    else
+      display("keeping shared database addon because of incomplete migration")
     end
   end
 end
