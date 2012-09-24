@@ -328,6 +328,11 @@ class Heroku::PgMigrate::ScaleZero
         'or ps:stop them to perform the migration')
     end
 
+    if @old_counts.keys.include?('scheduler')
+      raise Heroku::PgMigrate::CannotMigrate.new(
+        'ERROR: "scheduler" processes detected, aborting migration')
+    end
+
     # Perform the actual de-scaling
     #
     # TODO: special case handling of "run" type processes
