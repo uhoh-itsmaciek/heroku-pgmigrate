@@ -206,12 +206,27 @@ class Heroku::PgMigrate::MultiPhase
     # one or more times unless someone completely kills the program)
     # and we'd *really* prefer them run until they are successful,
     # no matter what.
+    #
+    # NB: this code is not completely sound in handling all interrupts
+    # at any time, and to be so it would have to learn to be
+    # re-entrant: consider if there is an interrupt when entering this
+    # procedure, but before any work gets done.  However, in event of
+    # such an error a Fatal error is registered by shen-migrator via
+    # the prepostinvariant procedure.
+    #
+    # So instead, just treat the common case as to avoid vanilla API
+    # errors from causing too much harm, and exit if somethihng causes
+    # the rollback to get incredibly stuck.
     loop do
       xact = rollbacks.pop()
       break if xact.nil?
 
-      # Nested loop to retry in event of re-raised interrupts
+      attempts = 0
       loop do
+        if attempts > 10
+          exit(26)
+        end
+
         begin
           # Some actions have no sensible rollback, but this conditional
           # allows them to avoid writing noop rollback! methods all the
@@ -223,6 +238,7 @@ class Heroku::PgMigrate::MultiPhase
           break
         rescue Exception, Interrupt => e
           puts e.to_s
+          attempts += 1
         end
       end
     end
