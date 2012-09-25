@@ -320,18 +320,22 @@ class Heroku::PgMigrate::ScaleZero
     @old_counts = nil
 
     # Remember the previous scaling for rollback.  Can fail.
-    @old_counts = self.class.process_count(@api, @app)
+    current_processes = self.class.process_count(@api, @app)
 
-    if @old_counts.keys.include?('run')
+    if current_processes.keys.include?('run')
       raise Heroku::PgMigrate::CannotMigrate.new(
         'ERROR: "heroku run" processes detected, wait for these to complete ' +
         'or ps:stop them to perform the migration')
     end
 
-    if @old_counts.keys.include?('scheduler')
+    if current_processes.keys.include?('scheduler')
       raise Heroku::PgMigrate::CannotMigrate.new(
         'ERROR: "scheduler" processes detected, aborting migration')
     end
+
+    # Now old_counts have been vetted for non-problematic process
+    # names, so commit to rolling back any changes hereonin.
+    @old_counts = current_processes
 
     # Perform the actual de-scaling
     #
