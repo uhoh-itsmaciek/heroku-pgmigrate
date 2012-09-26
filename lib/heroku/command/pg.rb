@@ -98,8 +98,10 @@ EOF
     # after migration.
     display('Maintenance mode: ' +
       Heroku::PgMigrate::Maintenance.fetch_maintenance_status(api, app).to_s)
+    transient_processes = [ 'run', 'scheduler' ]
     display('process-counts' + ":\t" +
-      Heroku::PgMigrate::ScaleZero.process_count(api, app).sort.inspect)
+      Heroku::PgMigrate::ScaleZero.process_count(api, app).reject { |key, value|
+              transient_processes.include? key }.sort.inspect)
   end
 
   def releasereport
