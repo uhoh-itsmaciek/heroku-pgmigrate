@@ -636,8 +636,14 @@ class Heroku::PgMigrate::Transfer
         update_display(transfer)
         break if transfer["finished_at"]
 
-        sleep 1
-        transfer = pgbackups_client.get_transfer(transfer["id"])
+        attempts = 0
+        begin
+          sleep 1
+          transfer = pgbackup_client.get_transfer(transfer["id"])
+        rescue RestClient::ServiceUnavailable
+          (attempts += 1) <= 50 ? retry : raise
+        end
+
       end
 
       display "\n"
