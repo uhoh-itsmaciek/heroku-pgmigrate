@@ -2,6 +2,30 @@ require 'thread'
 
 require "heroku/command/base"
 
+module Heroku::Sudo::Client
+
+module Heroku
+  # Graft the lockout methods onto the API class
+  class API
+    def put_lockout_halt(app)
+      request(
+              :expects  => 200,
+              :method   => :put,
+              :path     => "/apps/#{app}/activity",
+              :query    => { 'state' => 'halt' }
+              )
+    end
+
+    def put_lockout_resume(app)
+      request(
+              :expects  => 200,
+              :method   => :put,
+              :path     => "/apps/#{app}/activity",
+              :query    => { 'state' => 'halt' }
+              )
+    end
+end
+
 class Heroku::Command::Pg < Heroku::Command::Base
 
   include Heroku::Helpers
@@ -21,7 +45,7 @@ class Heroku::Command::Pg < Heroku::Command::Base
     end
 
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
-    scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
+    lockout = Heroku::PgMigrate::Lockout.new(api, app)
     rebind = Heroku::PgMigrate::RebindConfig.new(api, app, shen_url)
     provision = Heroku::PgMigrate::Provision.new(api, app)
     foi_pgbackups = Heroku::PgMigrate::FindOrInstallPgBackups.new(api, app)
@@ -31,7 +55,7 @@ class Heroku::Command::Pg < Heroku::Command::Base
     mp.enqueue(foi_pgbackups)
     mp.enqueue(provision)
     mp.enqueue(maintenance)
-    mp.enqueue(scale_zero)
+    mp.enqueue(lockout)
     mp.enqueue(transfer)
     mp.enqueue(rebind)
 
@@ -100,7 +124,7 @@ EOF
       Heroku::PgMigrate::Maintenance.fetch_maintenance_status(api, app).to_s)
     transient_processes = [ 'run', 'scheduler' ]
     display('process-counts' + ":\t" +
-      Heroku::PgMigrate::ScaleZero.process_count(api, app).reject { |key, value|
+      Heroku::PgMigrate::Lockout.process_count(api, app).reject { |key, value|
               transient_processes.include? key }.sort.inspect)
   end
 
@@ -114,7 +138,7 @@ EOF
     }
 
     display('process-counts' + ":\t" +
-      Heroku::PgMigrate::ScaleZero.process_count(api, app).inspect)
+      Heroku::PgMigrate::Lockout.process_count(api, app).inspect)
   end
 end
 
@@ -310,7 +334,7 @@ class Heroku::PgMigrate::Maintenance
   end
 end
 
-class Heroku::PgMigrate::ScaleZero
+class Heroku::PgMigrate::Lockout
   include Heroku::Helpers
 
   def initialize api, app
@@ -319,30 +343,8 @@ class Heroku::PgMigrate::ScaleZero
   end
 
   def perform!(ff)
-    @old_counts = nil
-
-    # Remember the previous scaling for rollback.  Can fail.
-    current_processes = self.class.process_count(@api, @app)
-
-    if current_processes.keys.include?('run')
-      raise Heroku::PgMigrate::CannotMigrate.new(
-        'ERROR: "heroku run" processes detected, wait for these to complete ' +
-        'or ps:stop them to perform the migration')
-    end
-
-    if current_processes.keys.include?('scheduler')
-      raise Heroku::PgMigrate::CannotMigrate.new(
-        'ERROR: "scheduler" processes detected, aborting migration')
-    end
-
-    # Now old_counts have been vetted for non-problematic process
-    # names, so commit to rolling back any changes hereonin.
-    @old_counts = current_processes
-
-    # Perform the actual de-scaling
-    #
-    # TODO: special case handling of "run" type processes
-    scale_zero!(@old_counts.keys)
+    # Perform the actual lockout
+    lockout!
 
     # Always want to rollback, regardless of exceptions or their
     # absence.  However, exceptions must be propagated as to
@@ -354,15 +356,9 @@ class Heroku::PgMigrate::ScaleZero
   end
 
   def rollback!(reason)
-    if @old_counts == nil
-      # Must be true iff processes were never scaled down.
-    else
-      @old_counts.each { |name, amount|
-        action("Restoring process #{name} scale to #{amount}") {
-          @api.post_ps_scale(@app, name, amount.to_s).body
-        }
-      }
-    end
+    action("Removing application lockout") {
+      @api.put_lockout_resume(@app)
+    }
   end
 
   #
@@ -391,19 +387,10 @@ class Heroku::PgMigrate::ScaleZero
     return old_counts
   end
 
-  def scale_zero! names
-    # Scale every process contained in the sequence 'names' to zero.
-    if names.empty?
-      hputs("No active processes to scale down, skipping")
-    else
-      names.each { |name|
-        action("Scaling process #{name} to 0") {
-          @api.post_ps_scale(@app, name, '0')
-        }
-      }
-    end
-
-    return nil
+  def lockout!
+    action("Locking out application process scaling") {
+      @api.put_lockout_halt(@app)
+    }
   end
 end
 
