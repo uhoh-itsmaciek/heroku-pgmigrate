@@ -21,7 +21,7 @@ module Heroku
               :expects  => 200,
               :method   => :put,
               :path     => "/apps/#{app}/activity",
-              :query    => { 'state' => 'halt' }
+              :query    => { 'state' => 'resume' }
               )
     end
 end
