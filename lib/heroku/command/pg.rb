@@ -2,8 +2,6 @@ require 'thread'
 
 require "heroku/command/base"
 
-module Heroku::Sudo::Client
-
 module Heroku
   # Graft the lockout methods onto the API class
   class API
@@ -24,6 +22,7 @@ module Heroku
               :query    => { 'state' => 'resume' }
               )
     end
+  end
 end
 
 class Heroku::Command::Pg < Heroku::Command::Base
