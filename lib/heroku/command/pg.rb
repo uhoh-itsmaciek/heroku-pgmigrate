@@ -620,6 +620,15 @@ class Heroku::PgMigrate::Transfer
     include Heroku::Helpers
     include Heroku::Helpers::HerokuPostgresql
 
+
+    def poll_error(app)
+      error <<-EOM
+Failed to query the PGBackups status API. Your backup may still be running.
+Verify the status of your backup with `heroku pgbackups -a #{app}`
+      EOM
+    end
+
+
     def poll_transfer!(pgbackups_client, transfer)
       display "\n"
 
@@ -636,14 +645,18 @@ class Heroku::PgMigrate::Transfer
         update_display(transfer)
         break if transfer["finished_at"]
 
-        attempts = 0
+        sleep_time = 1
         begin
-          sleep 1
+          sleep(sleep_time)
           transfer = pgbackups_client.get_transfer(transfer["id"])
         rescue RestClient::ServiceUnavailable
-          (attempts += 1) <= 50 ? retry : raise
+          if sleep_time > 300
+            poll_error(@app)
+          else
+            sleep_time *= 2
+            retry
+          end
         end
-
       end
 
       display "\n"
