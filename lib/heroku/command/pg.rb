@@ -606,6 +606,7 @@ class Heroku::PgMigrate::Transfer
         from_url, "legacy-db", to_url, 'hpg-shared')
       backup = renderer.poll_transfer!(pgbackups_client, backup)
       if backup["error_at"]
+        puts backup.inspect
         raise Heroku::PgMigrate::CannotMigrate.new(
           "ERROR: Transfer failed, aborting.")
       end
@@ -636,7 +637,7 @@ Verify the status of your backup with `heroku pgbackups -a #{app}`
         transfer["errors"].values.flatten.each { |e|
           output_with_bang "#{e}"
         }
-
+        puts transfer.inspect
         raise Heroku::PgMigrate::CannotMigrate.new(
           "ERROR: Transfer failed, aborting.")
       end
@@ -654,8 +655,14 @@ Verify the status of your backup with `heroku pgbackups -a #{app}`
             poll_error(@app)
           else
             sleep_time *= 2
+            display "Retrying after #{sleep_time} seconds\n"
             retry
           end
+        rescue Exception => e
+          puts "Aborting due to other error in transfer:"
+          puts e.inspect
+          puts e.backtrace.inspect
+          raise
         end
       end
 
