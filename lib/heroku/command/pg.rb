@@ -740,6 +740,7 @@ class Heroku::PgMigrate::RemoveShared
     if reason.nil?
       display("Deleted shared database addon: #{@plan_name}")
       @api.delete_addon(@app, @plan_name)
+      @api.post_ps_restart(@app, {})
     else
       display("keeping shared database addon because of incomplete migration")
     end
