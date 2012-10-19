@@ -43,6 +43,11 @@ class Heroku::Command::Pg < Heroku::Command::Base
       exit(23)
     end
 
+    if options[:fastpath]
+      is_fastpath = true
+      display("Running fast-path migration")
+    end
+
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
     lockout = Heroku::PgMigrate::Lockout.new(api, app)
     rebind = Heroku::PgMigrate::RebindConfig.new(api, app, shen_url)
@@ -51,11 +56,15 @@ class Heroku::Command::Pg < Heroku::Command::Base
     transfer = Heroku::PgMigrate::Transfer.new(api, app, shen_url)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
-    mp.enqueue(foi_pgbackups)
+    unless is_fastpath
+      mp.enqueue(foi_pgbackups)
+    end
     mp.enqueue(provision)
-    mp.enqueue(maintenance)
-    mp.enqueue(lockout)
-    mp.enqueue(transfer)
+    unless is_fastpath
+      mp.enqueue(maintenance)
+      mp.enqueue(lockout)
+      mp.enqueue(transfer)
+    end
     mp.enqueue(rebind)
 
     # Conditionally enqueue the removal of the shared database plan
