@@ -34,6 +34,7 @@ class Heroku::Command::Pg < Heroku::Command::Base
   # Migrate from legacy shared databases to Heroku Postgres Dev
   #
   #     --remove-shared-addon plan # Remove the shared database addon when done
+  #     --fastpath                 # Perform a fastpath migration on an empty database
   def migrate
     shen_url = shift_argument
     validate_arguments!
