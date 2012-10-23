@@ -352,19 +352,6 @@ class Heroku::PgMigrate::Lockout
   end
 
   def perform!(ff)
-    current_processes = self.class.process_count(@api, @app)
-
-    if current_processes.keys.include?('run')
-      raise Heroku::PgMigrate::CannotMigrate.new(
-        'ERROR: "heroku run" processes detected, wait for these to complete ' +
-        'or ps:stop them to perform the migration')
-    end
-
-    if current_processes.keys.include?('scheduler')
-      raise Heroku::PgMigrate::CannotMigrate.new(
-        'ERROR: "scheduler" processes detected, aborting migration')
-    end
-
     # Perform the actual lockout
     lockout!
 
