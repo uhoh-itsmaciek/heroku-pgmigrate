@@ -34,7 +34,7 @@ class Heroku::Command::Pg < Heroku::Command::Base
   # Migrate from legacy shared databases to Heroku Postgres Dev
   #
   #     --remove-shared-addon plan # Remove the shared database addon when done
-  #     --fastpath                 # Perform a fastpath migration on an empty database
+  #     --mode                mode # Optimized migration mode: default, no-lockout, or no-transfer
   def migrate
     shen_url = shift_argument
     validate_arguments!
@@ -44,9 +44,26 @@ class Heroku::Command::Pg < Heroku::Command::Base
       exit(23)
     end
 
-    if options[:fastpath]
-      is_fastpath = true
-      display("Running fast-path migration")
+    do_lockout = true
+    do_transfer = true
+    if options[:mode]
+      mode = options[:mode]
+      case mode
+      when 'no-lockout'
+        do_lockout = false
+        do_transfer = true
+        display("Running no-lockout migration")
+      when 'no-transfer'
+        do_lockout = false
+        do_transfer = false
+        display("Running no-transfer migration")
+      when 'default'
+        do_lockout = true
+        do_transfer = true
+      else
+        display("Invalid mode: #{mode}; expected 'no-lockout', 'no-transfer', or 'default'")
+        exit(23)
+      end
     end
 
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
@@ -57,13 +74,15 @@ class Heroku::Command::Pg < Heroku::Command::Base
     transfer = Heroku::PgMigrate::Transfer.new(api, app, shen_url)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
-    unless is_fastpath
+    if do_transfer
       mp.enqueue(foi_pgbackups)
     end
     mp.enqueue(provision)
-    unless is_fastpath
+    if do_lockout
       mp.enqueue(maintenance)
       mp.enqueue(lockout)
+    end
+    if do_transfer
       mp.enqueue(transfer)
     end
     mp.enqueue(rebind)
